@@ -14,11 +14,10 @@ fn format_timestamp(ts_float: f64, time_format: &str) -> String {
     let nanoseconds = ((ts_float - seconds as f64) * 1_000_000_000.0) as u32;
     let bj_time_zone = FixedOffset::east_opt(8 * 3600).unwrap();
 
-    if let Some(dt) = bj_time_zone.timestamp_opt(seconds, nanoseconds).single() {
-        dt.format(time_format).to_string()
-    } else {
-        "Invalid Timestamp".to_string()
-    }
+    bj_time_zone
+        .timestamp_opt(seconds, nanoseconds)
+        .single()
+        .map_or_else(|| "Invalid Timestamp".to_string(), |dt| dt.format(time_format).to_string())
 }
 
 fn parse_blf<P: AsRef<Path>>(file_path: P) -> anyhow::Result<()> {
@@ -60,20 +59,35 @@ fn parse_blf<P: AsRef<Path>>(file_path: P) -> anyhow::Result<()> {
             eprintln!("Failed to open BLF: {:?}", reader_res.err());
         }
     }
-    
-    let final_name = if let (Some(first), Some(last)) = (first_msg, last_msg) {
-        let res = format!("{}---{}.txt", first, last);
-        
-        res_dir.join(res)
-    } else {
-        return Err(anyhow::anyhow!("Failed to decided the last filename"));
+
+    let final_name = match (first_msg, last_msg) {
+        (Some(first), Some(last)) => res_dir.join(format!("{}---{}.txt", first, last)),
+        _=> return Err(anyhow::anyhow!("Failed to determine the output filename")),
     };
-
+    
     fs::rename(&tmp_filepath, final_name)?;
-
     Ok(())
 }
 
+fn process_file(file_path: &Path) {
+    if let Err(e) = parse_blf(file_path) {
+        eprintln!("Error Processing {:?}: {}", file_path, e);
+    }
+}
+
+fn process_directory(dir_path: &Path) -> anyhow::Result<()> {
+    let entries: Vec<_> = fs::read_dir(dir_path).context("Failed to read directory")?.collect();
+    entries.par_iter().for_each(|entry| {
+        if let Ok(entry) = entry {
+            let file_path = entry.path();
+            if file_path.is_file() {
+                println!("Processing {:?}", file_path.file_name().unwrap());
+                process_file(&file_path);
+            }
+        }
+    });
+    Ok(())
+}
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = env::args().collect();
@@ -86,26 +100,11 @@ fn main() -> anyhow::Result<()> {
     let input_path = Path::new(target_dir);
 
     if input_path.is_file() {
-        if let Err(e) = parse_blf(&input_path) {
-            eprintln!("Parse {:?} Err {}", input_path, e);
-        }
+        process_file(input_path);
     } else if input_path.is_dir() {
-        let entries: Vec<_> = fs::read_dir(input_path).context("Failed to read dir")?.collect();
-        entries.par_iter().for_each(|entry| {
-            if let Ok(entry) = entry {
-                let file_path = entry.path();
-    
-                if file_path.is_file() {
-                    println!("Processing {:?}", file_path.file_name().unwrap());
-                    if let Err(e) = parse_blf(&file_path) {
-                        eprintln!("Parse {:?} Err {}", file_path, e);
-                    }
-                }
-            }
-        });
+        process_directory(input_path)?;
     } else {
         anyhow::bail!("Invalid Path {}", target_dir);
     }
-
     Ok(())
 }
